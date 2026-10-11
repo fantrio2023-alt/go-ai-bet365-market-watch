@@ -14,7 +14,7 @@ Standalone GO AI Bet365 Market Watch repository, independent from the primary Od
 
 ## Workflow
 
-`.github/workflows/bet365-market-watch.yml` runs on manual dispatch and a conservative 30-minute schedule while the provider authentication is being diagnosed. It does not use the primary Odds API key pool or alter the tennis/football model.
+**Runtime location:** the actual scheduled monitor runs from [`fantrio2023-alt/go-ai-monitor`](https://github.com/fantrio2023-alt/go-ai-monitor/actions/workflows/bet365-market-watch-isolated.yml), where the existing `ODDS_API_KEY` pool is configured. GitHub does not share repository secrets with this source repository automatically. A manual run of `.github/workflows/bet365-market-watch.yml` in this repository will fail until its own `ODDS_API_KEY` / `ODDS_API_KEYS` secrets are configured. The canonical workflow checks this repository's `main` branch for the latest watcher source and runs every 30 minutes.
 
 ## Notification
 
