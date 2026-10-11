@@ -8,9 +8,9 @@ The canonical workflow is in [fantrio2023-alt/go-ai-monitor](https://github.com/
 
 ## Request and quota
 
-- One request per scheduled run, every 30 minutes.
-- Endpoint: `GET https://api.the-odds-api.com/v4/sports/soccer_spain_la_liga/odds/`
-- Requests Bet365 prices for `h2h,spreads,totals`.
+- Scans 4 active soccer leagues per scheduled run, every 30 minutes; the league cursor rotates through the full active soccer catalogue over successive runs.
+- Discovers active soccer leagues from The Odds API `/v4/sports/` catalogue, then requests `/v4/sports/{sport_key}/odds/` for the selected leagues.
+- Requests Bet365 prices for `h2h,spreads,totals` across the selected leagues; it is not restricted to La Liga.
 - Logs the provider's remaining/used request headers without exposing any key.
 - Default ntfy topic: `goai-al-2026-94731-market-watch`.
 
