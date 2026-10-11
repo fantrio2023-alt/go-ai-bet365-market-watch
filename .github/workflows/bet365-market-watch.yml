@@ -2,6 +2,10 @@ name: Bet365 Market Watch (isolated)
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'go_ai_football_market_watch.py'
+      - '.github/workflows/bet365-market-watch.yml'
   schedule:
     # Conservative polling while Odds-API.io authentication and usage are validated.
     - cron: '*/30 * * * *'
