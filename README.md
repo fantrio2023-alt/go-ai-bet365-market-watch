@@ -1,26 +1,17 @@
 # Bet365 Market Watch
 
-Source repository for the GO AI Bet365 market watcher. The live monitor uses **Odds-API.io v3** and the **ODDS_API_IO_KEY** secret. It does not use the separate The Odds API key pool.
+The Bet365 market watcher uses **The Odds API v4** and the same key pool as the main GO AI monitor.
 
-## What it does
+## Key source and rotation
 
-- Finds football events offered by Bet365 through Odds-API.io.
-- Fetches odds for at most 10 events per poll using the provider's multi-event endpoint.
-- Tracks the number of priced markets across runs.
-- Sends an ntfy notification when a match transitions to exactly one priced market.
-- Runs on a conservative 30-minute schedule in the canonical runtime.
+The canonical workflow is in [fantrio2023-alt/go-ai-monitor](https://github.com/fantrio2023-alt/go-ai-monitor/actions/workflows/bet365-market-watch-isolated.yml). It injects the `ODDS_API__KEY` secret, plus the established `ODDS_API_KEY`, `ODDS_API_KEYS`, and numbered `ODDS_API_KEY_1` through `ODDS_API_KEY_30` secrets. The watcher deduplicates the pool, rotates the starting key between runs, and retries another key only after HTTP 401 or 429. Secret values are never printed.
 
-## Canonical runtime and secret
+## Request and quota
 
-The scheduled monitor runs from [fantrio2023-alt/go-ai-monitor](https://github.com/fantrio2023-alt/go-ai-monitor/actions/workflows/bet365-market-watch-isolated.yml). The secret must exist there as the Actions secret `ODDS_API_IO_KEY`. GitHub does not share secrets between repositories. The source repository's manual workflow only checks Python syntax and intentionally makes no API request, so it cannot fail because of a missing local secret or spend API quota.
+- One request per scheduled run, every 30 minutes.
+- Endpoint: `GET https://api.the-odds-api.com/v4/sports/soccer_spain_la_liga/odds/`
+- Requests Bet365 prices for `h2h,spreads,totals`.
+- Logs the provider's remaining/used request headers without exposing any key.
+- Default ntfy topic: `goai-al-2026-94731-market-watch`.
 
-## Provider endpoints
-
-- `GET https://api.odds-api.io/v3/events?sport=football&bookmaker=Bet365`
-- `GET https://api.odds-api.io/v3/odds/multi` for up to 10 event IDs per request.
-
-The API key is never printed in workflow logs. HTTP 401 is reported as an authentication rejection; if it appears in the canonical run, the value stored in `ODDS_API_IO_KEY` must be replaced with a valid key from the Odds-API.io account.
-
-## Notification
-
-Default ntfy topic: `goai-al-2026-94731-market-watch`.
+The standalone source workflow only validates syntax and makes no provider request. The live runtime uses the main repository's secrets because GitHub does not share Actions secrets between repositories.
