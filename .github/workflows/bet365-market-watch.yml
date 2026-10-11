@@ -1,14 +1,10 @@
 name: Bet365 Market Watch (isolated)
 
 on:
+  # Manual runs here require the Odds API secrets to be added to THIS repository.
+  # Scheduled production runs use the main repo's secret pool via
+  # .github/workflows/bet365-market-watch-isolated.yml in go-ai-monitor.
   workflow_dispatch:
-  push:
-    paths:
-      - 'go_ai_football_market_watch.py'
-      - '.github/workflows/bet365-market-watch.yml'
-  schedule:
-    # One league and one key per run; rotate to control quota use.
-    - cron: '*/30 * * * *'
 
 permissions:
   contents: read
