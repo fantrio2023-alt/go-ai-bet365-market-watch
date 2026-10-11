@@ -1,4 +1,4 @@
-"""Bet365 watcher using Odds-API.io v3 and ODDS_API_IO_KEY."""
+"""Bet365 market watcher using The Odds API v4 and the main GO AI key pool."""
 import json
 import os
 import urllib.error
@@ -6,35 +6,35 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-BASE = "https://api.odds-api.io/v3"
-API_KEY = (os.getenv("ODDS_API_IO_KEY") or "").strip()
+BASE = "https://api.the-odds-api.com/v4"
 TOPIC = os.getenv("GO_AI_MARKET_WATCH_NTFY_TOPIC", "goai-al-2026-94731-market-watch").strip()
 STATE_FILE = os.getenv("GO_AI_MARKET_WATCH_STATE", ".go_ai_market_watch_state.json")
 TIMEOUT = int(os.getenv("GO_AI_MARKET_WATCH_TIMEOUT", "20"))
-SPORT = os.getenv("GO_AI_MARKET_WATCH_SPORT", "football").strip() or "football"
-BOOKMAKER = os.getenv("GO_AI_MARKET_WATCH_BOOKMAKER", "Bet365").strip() or "Bet365"
-MAX_EVENTS = max(1, min(10, int(os.getenv("GO_AI_MARKET_WATCH_MAX_EVENTS", "10"))))
+SPORT = os.getenv("GO_AI_MARKET_WATCH_SPORT", "soccer_spain_la_liga").strip() or "soccer_spain_la_liga"
+BOOKMAKER = os.getenv("GO_AI_MARKET_WATCH_BOOKMAKER", "bet365").strip().casefold() or "bet365"
+MARKETS = os.getenv("GO_AI_MARKET_WATCH_MARKETS", "h2h,spreads,totals").strip() or "h2h"
+MAX_EVENTS = max(1, min(100, int(os.getenv("GO_AI_MARKET_WATCH_MAX_EVENTS", "100"))))
 
 
-def api_get(path, params):
-    query = dict(params)
-    query["apiKey"] = API_KEY
-    url = BASE + "/" + path.lstrip("/") + "?" + urllib.parse.urlencode(query)
-    request = urllib.request.Request(url, headers={"User-Agent": "GO-AI-BET365-MARKET-WATCH/3.0"})
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        # Do not print the exception or URL: the API key is a query parameter.
-        if exc.code == 401:
-            print("MARKET WATCH: ODDS_API_IO_AUTH_FAILED HTTP 401 — provider rejected ODDS_API_IO_KEY.")
-        elif exc.code == 403:
-            print("MARKET WATCH: ODDS_API_IO_FORBIDDEN HTTP 403 — account/key lacks access.")
-        elif exc.code == 429:
-            print("MARKET WATCH: ODDS_API_IO_RATE_LIMIT HTTP 429 — provider rate limit or quota reached.")
-        else:
-            print("MARKET WATCH: ODDS_API_IO_HTTP_ERROR status=" + str(exc.code) + " endpoint=/" + path.lstrip("/") + ".")
-        raise
+def load_keys():
+    """Load the requested double-underscore secret and the established GO AI pool."""
+    keys = []
+    for name in ("ODDS_API__KEY", "ODDS_API_KEY"):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            keys.append(value)
+    for name in ("ODDS_API_KEYS",):
+        raw = os.getenv(name) or ""
+        for value in raw.replace(",", "\n").replace(";", "\n").splitlines():
+            value = value.strip()
+            if value:
+                keys.append(value)
+    for i in range(1, 31):
+        value = (os.getenv(f"ODDS_API_KEY_{i}") or "").strip()
+        if value:
+            keys.append(value)
+    # Keep order stable and never log key values.
+    return list(dict.fromkeys(keys))
 
 
 def load_state():
@@ -55,44 +55,74 @@ def norm(value):
     return " ".join(str(value or "").casefold().split())
 
 
-def active_market_names(markets):
-    if not isinstance(markets, list):
-        return []
-    names = set()
-    price_fields = {"home", "draw", "away", "over", "under", "yes", "no", "odd", "price"}
-    for market in markets:
-        if not isinstance(market, dict):
-            continue
-        rows = market.get("odds")
-        if not isinstance(rows, list):
-            continue
-        active = False
-        for row in rows:
-            if not isinstance(row, dict):
+def fetch_odds(sport, keys, start_index):
+    url_path = f"/sports/{urllib.parse.quote(sport, safe='_')}/odds/"
+    last_status = None
+    # Try keys in rotation. Only retry a different key on authentication/quota errors.
+    for offset in range(len(keys)):
+        index = (start_index + offset) % len(keys)
+        query = urllib.parse.urlencode({
+            "apiKey": keys[index],
+            "bookmakers": BOOKMAKER,
+            "markets": MARKETS,
+            "oddsFormat": "decimal",
+            "dateFormat": "iso",
+        })
+        request = urllib.request.Request(
+            BASE + url_path + "?" + query,
+            headers={"User-Agent": "GO-AI-BET365-MARKET-WATCH/4.0"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                remaining = response.headers.get("x-requests-remaining", "unknown")
+                used = response.headers.get("x-requests-used", "unknown")
+                return payload, index, remaining, used
+        except urllib.error.HTTPError as exc:
+            last_status = exc.code
+            if exc.code in (401, 429):
                 continue
-            for key, value in row.items():
-                if key.casefold() not in price_fields or value in (None, ""):
+            print(f"MARKET WATCH: ODDS_API_HTTP_ERROR status={exc.code}; key rotation stopped.")
+            return None, index, "unknown", "unknown"
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(f"MARKET WATCH: REQUEST_FAILED type={type(exc).__name__}; no key or URL details logged.")
+            return None, index, "unknown", "unknown"
+    print(f"MARKET WATCH: KEY_POOL_FAILED tried={len(keys)} last_http_status={last_status}; check The Odds API key pool/quota.")
+    return None, (start_index + len(keys)) % len(keys), "unknown", "unknown"
+
+
+def active_markets(event):
+    books = event.get("bookmakers")
+    if not isinstance(books, list):
+        return []
+    for book in books:
+        if not isinstance(book, dict):
+            continue
+        if norm(book.get("key")) != BOOKMAKER and norm(book.get("title")) != BOOKMAKER:
+            continue
+        markets = book.get("markets")
+        if not isinstance(markets, list):
+            return []
+        active = []
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            outcomes = market.get("outcomes")
+            if not isinstance(outcomes, list):
+                continue
+            has_price = False
+            for outcome in outcomes:
+                if not isinstance(outcome, dict):
                     continue
                 try:
-                    if float(value) > 1.0:
-                        active = True
+                    if float(outcome.get("price", 0)) > 1.0:
+                        has_price = True
                         break
                 except (TypeError, ValueError):
-                    continue
-            if active:
-                break
-        if active:
-            names.add(str(market.get("name") or market.get("key") or "unnamed_market"))
-    return sorted(names, key=str.casefold)
-
-
-def get_bookmaker_markets(event):
-    books = event.get("bookmakers")
-    if not isinstance(books, dict):
-        return []
-    for name, markets in books.items():
-        if norm(name) == norm(BOOKMAKER):
-            return markets if isinstance(markets, list) else []
+                    pass
+            if has_price:
+                active.append(str(market.get("key") or market.get("name") or "unnamed_market"))
+        return sorted(set(active), key=str.casefold)
     return []
 
 
@@ -110,44 +140,30 @@ def ntfy(title, body, event_id):
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         if response.status < 200 or response.status >= 300:
-            raise RuntimeError("ntfy returned HTTP " + str(response.status))
+            raise RuntimeError(f"ntfy returned HTTP {response.status}")
 
 
 def main():
-    if not API_KEY:
-        print("MARKET WATCH: AUTH_NOT_CONFIGURED — ODDS_API_IO_KEY is empty in the canonical workflow.")
+    keys = load_keys()
+    if not keys:
+        print("MARKET WATCH: AUTH_NOT_CONFIGURED — no ODDS_API__KEY / ODDS_API_KEY pool entries were injected.")
         return 2
 
-    # Two bounded API calls per poll: discover events, then price up to 10 in one multi request.
-    discovered = api_get("events", {"sport": SPORT, "bookmaker": BOOKMAKER})
-    if not isinstance(discovered, list):
-        print("MARKET WATCH: ODDS_API_IO_BAD_EVENTS_RESPONSE — expected JSON list.")
-        return 1
-    events = [e for e in discovered if isinstance(e, dict) and e.get("id") is not None]
-    if not events:
-        print("MARKET WATCH: result=OK provider=Odds-API.io sport=" + SPORT + " events_returned=0 selected_events=0 bet365_events_checked=0 alerts_sent=0")
-        print("MARKET WATCH: NO_EVENTS — no events returned for the requested sport/bookmaker.")
-        return 0
-
     state = load_state()
-    offset = int(state.get("_event_offset", 0)) % len(events)
-    ordered = events[offset:] + events[:offset]
-    selected = ordered[:MAX_EVENTS]
-    ids = [str(e["id"]) for e in selected]
-    odds_data = api_get("odds/multi", {"eventIds": ",".join(ids), "bookmakers": BOOKMAKER})
-    if isinstance(odds_data, dict):
-        priced_events = [odds_data]
-    elif isinstance(odds_data, list):
-        priced_events = odds_data
-    else:
-        priced_events = []
-    by_id = {str(e.get("id")): e for e in priced_events if isinstance(e, dict) and e.get("id") is not None}
+    key_start = int(state.get("_key_offset", 0)) % len(keys)
+    payload, used_index, remaining, used = fetch_odds(SPORT, keys, key_start)
+    if payload is None:
+        return 1
+    if not isinstance(payload, list):
+        print("MARKET WATCH: BAD_RESPONSE — expected a JSON list from The Odds API v4.")
+        return 1
 
     previous = state
     current = dict(previous)
-    current["_event_offset"] = (offset + len(selected)) % max(1, len(events))
+    current["_key_offset"] = (used_index + 1) % len(keys)
     current["_last_run_utc"] = datetime.now(timezone.utc).isoformat()
-    current["_last_provider"] = "Odds-API.io"
+    current["_last_provider"] = "The Odds API"
+    current["_last_sport"] = SPORT
     now = datetime.now(timezone.utc)
     for old_id, old_value in list(current.items()):
         if str(old_id).startswith("_") or not isinstance(old_value, dict):
@@ -159,54 +175,50 @@ def main():
         except (ValueError, TypeError):
             current.pop(old_id, None)
 
+    events = [event for event in payload if isinstance(event, dict) and event.get("id") is not None]
     checked = 0
     alerts = []
-    for item in selected:
-        event_id = str(item["id"])
-        event = by_id.get(event_id, item)
-        names = active_market_names(get_bookmaker_markets(event))
+    for event in events[:MAX_EVENTS]:
+        names = active_markets(event)
         if not names:
             continue
         checked += 1
-        home = event.get("home") or item.get("home") or "Unknown"
-        away = event.get("away") or item.get("away") or "Unknown"
-        match = str(home) + " vs " + str(away)
-        league = event.get("league") or item.get("league") or {}
-        league_name = league.get("name", "unknown league") if isinstance(league, dict) else str(league)
-        event_date = event.get("date") or item.get("date") or "unknown"
+        event_id = str(event["id"])
+        match = f'{event.get("home_team") or "Unknown"} vs {event.get("away_team") or "Unknown"}'
+        league = event.get("sport_title") or SPORT
+        event_date = event.get("commence_time") or "unknown"
         current[event_id] = {
-            "match": match, "sport": SPORT, "league": league_name,
+            "match": match, "sport": SPORT, "league": league,
             "market_names": names, "market_count": len(names),
             "last_seen_utc": datetime.now(timezone.utc).isoformat(), "commence_time": event_date,
         }
         old = previous.get(event_id, {})
         if len(names) == 1 and int(old.get("market_count", -1)) != 1:
-            alerts.append((event_id, match, league_name, event_date, names[0], old.get("market_count")))
+            alerts.append((event_id, match, league, event_date, names[0], old.get("market_count")))
 
     sent = 0
-    for event_id, match, league_name, event_date, market_name, old_count in alerts:
+    for event_id, match, league, event_date, market_name, old_count in alerts:
         body = (
             "GO AI — ПРИОРИТЕТЕН ФУТБОЛЕН МАЧ\n\n"
-            + "Мач: " + match + "\nЛига: " + str(league_name) + "\n"
-            + "Източник: Bet365 (Odds-API.io)\nНалични пазари: 1\n"
-            + "Единствен останал пазар: " + market_name + "\nНачало: " + str(event_date) + "\n"
-            + "Предишен брой пазари: " + (str(old_count) if old_count is not None else "няма предишна снимка") + "\n\n"
-            + "Приоритетно известие за намалял брой пазари; само по себе си не доказва манипулация."
+            f"Мач: {match}\nЛига: {league}\n"
+            "Източник: Bet365 (The Odds API)\nНалични пазари: 1\n"
+            f"Единствен останал пазар: {market_name}\nНачало: {event_date}\n"
+            f"Предишен брой пазари: {old_count if old_count is not None else 'няма предишна снимка'}\n\n"
+            "Приоритетно известие за намалял брой пазари; само по себе си не доказва манипулация."
         )
         ntfy("GO AI: Bet365 — останал е 1 пазар", body, event_id)
         sent += 1
-        print("MARKET WATCH ALERT: " + match + " | market=" + market_name + " | league=" + str(league_name))
+        print(f"MARKET WATCH ALERT: {match} | market={market_name} | league={league}")
 
     save_state(current)
     print(
-        "MARKET WATCH: result=OK provider=Odds-API.io sport=" + SPORT
-        + " events_returned=" + str(len(events))
-        + " selected_events=" + str(len(selected))
-        + " bet365_events_checked=" + str(checked)
-        + " alerts_sent=" + str(sent) + " ntfy_topic=" + TOPIC
+        f"MARKET WATCH: result=OK provider=The Odds API sport={SPORT} "
+        f"key_pool={len(keys)} selected_key_slot={used_index + 1} "
+        f"remaining={remaining} used={used} events_returned={len(events)} "
+        f"bet365_events_checked={checked} alerts_sent={sent} ntfy_topic={TOPIC}"
     )
     if not checked:
-        print("MARKET WATCH: NO_PRICED_BET365_MARKETS — event discovery succeeded but selected events had no priced Bet365 markets.")
+        print("MARKET WATCH: NO_PRICED_BET365_MARKETS — request succeeded, but no priced Bet365 markets were returned for this sport.")
     return 0
 
 
