@@ -2,6 +2,10 @@ name: Bet365 Market Watch (source validation)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bet365-market-watch.yml'
 
 permissions:
   contents: read
