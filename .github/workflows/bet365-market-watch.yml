@@ -7,7 +7,7 @@ on:
       - 'go_ai_football_market_watch.py'
       - '.github/workflows/bet365-market-watch.yml'
   schedule:
-    # Conservative polling while Odds-API.io authentication and usage are validated.
+    # One league and one key per run; rotate to control quota use.
     - cron: '*/30 * * * *'
 
 permissions:
@@ -23,10 +23,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
-      GO_AI_MARKET_WATCH_BOOKMAKER: Bet365
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      ODDS_API_KEYS: ${{ secrets.ODDS_API_KEYS }}
+      ODDS_API_KEY_1: ${{ secrets.ODDS_API_KEY_1 }}
+      ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
+      ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
+      ODDS_API_KEY_4: ${{ secrets.ODDS_API_KEY_4 }}
+      ODDS_API_KEY_5: ${{ secrets.ODDS_API_KEY_5 }}
+      ODDS_API_KEY_6: ${{ secrets.ODDS_API_KEY_6 }}
+      ODDS_API_KEY_7: ${{ secrets.ODDS_API_KEY_7 }}
+      ODDS_API_KEY_8: ${{ secrets.ODDS_API_KEY_8 }}
+      ODDS_API_KEY_9: ${{ secrets.ODDS_API_KEY_9 }}
+      ODDS_API_KEY_10: ${{ secrets.ODDS_API_KEY_10 }}
+      ODDS_API_KEY_11: ${{ secrets.ODDS_API_KEY_11 }}
+      ODDS_API_KEY_12: ${{ secrets.ODDS_API_KEY_12 }}
+      ODDS_API_KEY_13: ${{ secrets.ODDS_API_KEY_13 }}
+      ODDS_API_KEY_14: ${{ secrets.ODDS_API_KEY_14 }}
+      ODDS_API_KEY_15: ${{ secrets.ODDS_API_KEY_15 }}
+      ODDS_API_KEY_16: ${{ secrets.ODDS_API_KEY_16 }}
+      ODDS_API_KEY_17: ${{ secrets.ODDS_API_KEY_17 }}
+      ODDS_API_KEY_18: ${{ secrets.ODDS_API_KEY_18 }}
+      ODDS_API_KEY_19: ${{ secrets.ODDS_API_KEY_19 }}
+      ODDS_API_KEY_20: ${{ secrets.ODDS_API_KEY_20 }}
+      ODDS_API_KEY_21: ${{ secrets.ODDS_API_KEY_21 }}
+      ODDS_API_KEY_22: ${{ secrets.ODDS_API_KEY_22 }}
+      ODDS_API_KEY_23: ${{ secrets.ODDS_API_KEY_23 }}
+      ODDS_API_KEY_24: ${{ secrets.ODDS_API_KEY_24 }}
+      ODDS_API_KEY_25: ${{ secrets.ODDS_API_KEY_25 }}
+      ODDS_API_KEY_26: ${{ secrets.ODDS_API_KEY_26 }}
+      ODDS_API_KEY_27: ${{ secrets.ODDS_API_KEY_27 }}
+      ODDS_API_KEY_28: ${{ secrets.ODDS_API_KEY_28 }}
+      ODDS_API_KEY_29: ${{ secrets.ODDS_API_KEY_29 }}
+      ODDS_API_KEY_30: ${{ secrets.ODDS_API_KEY_30 }}
+      GO_AI_MARKET_WATCH_BOOKMAKER: bet365
       GO_AI_MARKET_WATCH_NTFY_TOPIC: goai-al-2026-94731-market-watch
       GO_AI_MARKET_WATCH_STATE: .go_ai_market_watch_state.json
+      GO_AI_MARKET_WATCH_REGIONS: eu
+      GO_AI_MARKET_WATCH_MARKETS: h2h,spreads,totals
       PYTHONUNBUFFERED: '1'
     steps:
       - name: Checkout
@@ -44,6 +77,20 @@ jobs:
             bet365-market-watch-state-
       - name: Validate isolated monitor syntax
         run: python -m py_compile go_ai_football_market_watch.py
+      - name: Verify The Odds API key pool (never print key values)
+        run: |
+          python - <<'PY'
+          import os, re
+          def values(raw):
+              raw = (raw or '').strip()
+              return [x.strip().strip('"').strip("'") for x in re.split(r'[\\n,;]+', raw) if x.strip()]
+          keys=[]
+          for name in ['ODDS_API_KEYS','ODDS_API_KEY'] + [f'ODDS_API_KEY_{i}' for i in range(1,31)]:
+              keys.extend(values(os.getenv(name,'')))
+          print(f'The Odds API: configured key entries={len(set(keys))}')
+          if not keys:
+              raise SystemExit('No ODDS_API_KEY / ODDS_API_KEYS secrets available in this repository')
+          PY
       - name: Run Bet365 Market Watch only
         run: python -u go_ai_football_market_watch.py
       - name: Save market state
