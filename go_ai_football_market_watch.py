@@ -10,7 +10,7 @@ BASE = "https://api.the-odds-api.com/v4"
 TOPIC = os.getenv("GO_AI_MARKET_WATCH_NTFY_TOPIC", "goai-al-2026-94731-market-watch").strip()
 STATE_FILE = os.getenv("GO_AI_MARKET_WATCH_STATE", ".go_ai_market_watch_state.json")
 TIMEOUT = int(os.getenv("GO_AI_MARKET_WATCH_TIMEOUT", "20"))
-SPORT = os.getenv("GO_AI_MARKET_WATCH_SPORT", "soccer_spain_la_liga").strip() or "soccer_spain_la_liga"
+SPORTS_PER_RUN = max(1, min(12, int(os.getenv("GO_AI_MARKET_WATCH_SPORTS_PER_RUN", "4"))))
 BOOKMAKER = os.getenv("GO_AI_MARKET_WATCH_BOOKMAKER", "bet365").strip().casefold() or "bet365"
 MARKETS = os.getenv("GO_AI_MARKET_WATCH_MARKETS", "h2h,spreads,totals").strip() or "h2h"
 MAX_EVENTS = max(1, min(100, int(os.getenv("GO_AI_MARKET_WATCH_MAX_EVENTS", "100"))))
@@ -105,6 +105,38 @@ def fetch_odds(sport, keys, start_index):
     return None, (start_index + len(keys)) % len(keys), "unknown", "unknown"
 
 
+def fetch_soccer_sports(keys, start_index):
+    """Discover active soccer leagues dynamically; do not pin the monitor to one league."""
+    url = BASE + "/sports/"
+    last_status = None
+    for offset in range(len(keys)):
+        index = (start_index + offset) % len(keys)
+        query = urllib.parse.urlencode({"apiKey": keys[index], "all": "false"})
+        request = urllib.request.Request(url + "?" + query, headers={"User-Agent": "GO-AI-BET365-MARKET-WATCH/4.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                remaining = response.headers.get("x-requests-remaining", "unknown")
+                used = response.headers.get("x-requests-used", "unknown")
+                if not isinstance(payload, list):
+                    return [], index, remaining, used
+                sports = sorted({str(item.get("key", "")).strip() for item in payload
+                    if isinstance(item, dict) and str(item.get("key", "")).strip().startswith("soccer_")
+                    and item.get("active", True)})
+                return sports, index, remaining, used
+        except urllib.error.HTTPError as exc:
+            last_status = exc.code
+            if exc.code in (401, 429):
+                continue
+            print(f"MARKET WATCH: SPORTS_CATALOG_HTTP_ERROR status={exc.code}")
+            return [], index, "unknown", "unknown"
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(f"MARKET WATCH: SPORTS_CATALOG_FAILED type={type(exc).__name__}")
+            return [], index, "unknown", "unknown"
+    print(f"MARKET WATCH: SPORTS_CATALOG_KEY_POOL_FAILED tried={len(keys)} last_http_status={last_status}")
+    return [], start_index, "unknown", "unknown"
+
+
 def active_markets(event):
     books = event.get("bookmakers")
     if not isinstance(books, list):
@@ -165,20 +197,38 @@ def main():
 
     state = load_state()
     key_start = int(state.get("_key_offset", 0)) % len(keys)
-    payload, used_index, remaining, used = fetch_odds(SPORT, keys, key_start)
-    if payload is None:
-        return 1
-    if not isinstance(payload, list):
-        print("MARKET WATCH: BAD_RESPONSE — expected a JSON list from The Odds API v4.")
+    sports, catalog_key_index, catalog_remaining, catalog_used = fetch_soccer_sports(keys, key_start)
+    if not_sports := (not sports):
+        print("MARKET WATCH: NO_SOCCER_SPORTS_DISCOVERED — The Odds API returned no active soccer leagues.")
         return 1
 
+    # Rotate through all active soccer leagues over successive runs; cap calls to protect quota.
+    cursor = int(state.get("_sport_cursor", 0)) % len(sports)
+    selected_sports = [sports[(cursor + i) % len(sports)] for i in range(min(SPORTS_PER_RUN, len(sports)))]
     previous = state
     current = dict(previous)
-    current["_key_offset"] = (used_index + 1) % len(keys)
+    current["_sport_cursor"] = (cursor + len(selected_sports)) % len(sports)
+    current["_key_offset"] = (catalog_key_index + 1) % len(keys)
     current["_last_run_utc"] = datetime.now(timezone.utc).isoformat()
     current["_last_provider"] = "The Odds API"
-    current["_last_sport"] = SPORT
-    now = datetime.now(timezone.utc)
+    current["_last_sports_checked"] = selected_sports
+    all_events = []
+    used_index = catalog_key_index
+    remaining, used = catalog_remaining, catalog_used
+    for sport in selected_sports:
+        payload, used_index, remaining, used = fetch_odds(sport, keys, int(current.get("_key_offset", key_start)))
+        if payload is None:
+            print(f"MARKET WATCH: SPORT_REQUEST_FAILED sport={sport}; continuing to next league.")
+            continue
+        if not isinstance(payload, list):
+            print(f"MARKET WATCH: BAD_RESPONSE sport={sport}; expected a JSON list.")
+            continue
+        for event in payload:
+            if isinstance(event, dict):
+                event["_go_ai_sport_key"] = sport
+                all_events.append(event)
+        current["_key_offset"] = (used_index + 1) % len(keys)
+
     for old_id, old_value in list(current.items()):
         if str(old_id).startswith("_") or not isinstance(old_value, dict):
             continue
@@ -189,7 +239,7 @@ def main():
         except (ValueError, TypeError):
             current.pop(old_id, None)
 
-    events = [event for event in payload if isinstance(event, dict) and event.get("id") is not None]
+    events = [event for event in all_events if isinstance(event, dict) and event.get("id") is not None]
     checked = 0
     alerts = []
     for event in events[:MAX_EVENTS]:
@@ -202,7 +252,7 @@ def main():
         league = event.get("sport_title") or SPORT
         event_date = event.get("commence_time") or "unknown"
         current[event_id] = {
-            "match": match, "sport": SPORT, "league": league,
+            "match": match, "sport": event.get("_go_ai_sport_key", "soccer"), "league": league,
             "market_names": names, "market_count": len(names),
             "last_seen_utc": datetime.now(timezone.utc).isoformat(), "commence_time": event_date,
         }
@@ -226,13 +276,13 @@ def main():
 
     save_state(current)
     print(
-        f"MARKET WATCH: result=OK provider=The Odds API sport={SPORT} "
-        f"key_pool={len(keys)} selected_key_slot={used_index + 1} "
+        f"MARKET WATCH: result=OK provider=The Odds API soccer_leagues_discovered={len(sports)} "
+        f"soccer_leagues_checked={len(selected_sports)} leagues={','.join(selected_sports)} key_pool={len(keys)} selected_key_slot={used_index + 1} "
         f"remaining={remaining} used={used} events_returned={len(events)} "
         f"bet365_events_checked={checked} alerts_sent={sent} ntfy_topic={TOPIC}"
     )
     if not checked:
-        print("MARKET WATCH: NO_PRICED_BET365_MARKETS — request succeeded, but no priced Bet365 markets were returned for this sport.")
+        print("MARKET WATCH: NO_PRICED_BET365_MARKETS — request succeeded, but no priced Bet365 markets were returned for the selected soccer leagues.")
     return 0
 
 
