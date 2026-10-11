@@ -167,9 +167,21 @@ def main():
         return 1
     events = payload if isinstance(payload, list) else []
     previous = state
-    current = {"_sport_index": (sport_index + 1) % len(SPORTS),
-               "_key_index": (used_index + 1) % len(keys),
-               "_last_sport": sport, "_last_run_utc": datetime.now(timezone.utc).isoformat()}
+    current = dict(previous)
+    current.update({"_sport_index": (sport_index + 1) % len(SPORTS),
+                    "_key_index": (used_index + 1) % len(keys),
+                    "_last_sport": sport, "_last_run_utc": datetime.now(timezone.utc).isoformat()})
+    # Retain cross-league observations so the next rotation can compare the same match.
+    now = datetime.now(timezone.utc)
+    for old_id, old_value in list(current.items()):
+        if str(old_id).startswith("_") or not isinstance(old_value, dict):
+            continue
+        try:
+            seen = datetime.fromisoformat(str(old_value.get("last_seen_utc", "")).replace("Z", "+00:00"))
+            if (now - seen).total_seconds() > 7 * 86400:
+                current.pop(old_id, None)
+        except (ValueError, TypeError):
+            current.pop(old_id, None)
     alerts = []
     checked = 0
     for event in events:
