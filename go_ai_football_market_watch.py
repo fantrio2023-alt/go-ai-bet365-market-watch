@@ -16,26 +16,40 @@ MARKETS = os.getenv("GO_AI_MARKET_WATCH_MARKETS", "h2h,spreads,totals").strip() 
 MAX_EVENTS = max(1, min(100, int(os.getenv("GO_AI_MARKET_WATCH_MAX_EVENTS", "100"))))
 
 
-def load_keys():
-    """Load the requested double-underscore secret and the established GO AI pool."""
-    keys = []
-    for name in ("ODDS_API__KEY", "ODDS_API_KEY"):
-        value = (os.getenv(name) or "").strip()
-        if value:
-            keys.append(value)
-    for name in ("ODDS_API_KEYS",):
-        raw = os.getenv(name) or ""
-        for value in raw.replace(",", "\n").replace(";", "\n").splitlines():
-            value = value.strip()
-            if value:
-                keys.append(value)
-    for i in range(1, 31):
-        value = (os.getenv(f"ODDS_API_KEY_{i}") or "").strip()
-        if value:
-            keys.append(value)
-    # Keep order stable and never log key values.
-    return list(dict.fromkeys(keys))
+def _split_key_pool(raw):
+    """Parse a single key or an aggregate comma/newline/JSON key pool."""
+    value = str(raw or "").strip()
+    if not value:
+        return []
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                value = "\n".join(str(item) for item in parsed)
+        except (TypeError, ValueError):
+            pass
+    result = []
+    for part in __import__("re").split(r"[\n,;]+", value):
+        key = part.strip().strip('"').strip("'").strip()
+        if "=" in key and key.split("=", 1)[0].strip().lower() in {
+            "odds_api_key", "odds_api_keys", "odds_api__key", "apikey", "api_key"
+        }:
+            key = key.split("=", 1)[1].strip().strip('"').strip("'").strip()
+        if key:
+            result.append(key)
+    return result
 
+
+def load_keys():
+    """Load and deduplicate all configured GO AI Odds API key-pool formats."""
+    keys = []
+    # ODDS_API__KEY is explicitly supported, along with existing aggregate
+    # ODDS_API_KEY / ODDS_API_KEYS secrets, which may contain many comma-separated keys.
+    for name in ("ODDS_API__KEY", "ODDS_API_KEYS", "ODDS_API_KEY"):
+        keys.extend(_split_key_pool(os.getenv(name, "")))
+    for i in range(1, 31):
+        keys.extend(_split_key_pool(os.getenv(f"ODDS_API_KEY_{i}", "")))
+    return list(dict.fromkeys(keys))[:30]
 
 def load_state():
     try:
