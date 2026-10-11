@@ -1,0 +1,58 @@
+name: Bet365 Market Watch (isolated)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Conservative polling while Odds-API.io authentication and usage are validated.
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bet365-market-watch
+  cancel-in-progress: false
+
+jobs:
+  market-watch:
+    name: Bet365 Market Watch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
+      GO_AI_MARKET_WATCH_BOOKMAKER: Bet365
+      GO_AI_MARKET_WATCH_NTFY_TOPIC: goai-al-2026-94731-market-watch
+      GO_AI_MARKET_WATCH_STATE: .go_ai_market_watch_state.json
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Restore previous market state
+        uses: actions/cache/restore@v4
+        with:
+          path: .go_ai_market_watch_state.json
+          key: bet365-market-watch-state-${{ github.run_id }}
+          restore-keys: |
+            bet365-market-watch-state-
+      - name: Validate isolated monitor syntax
+        run: python -m py_compile go_ai_football_market_watch.py
+      - name: Run Bet365 Market Watch only
+        run: python -u go_ai_football_market_watch.py
+      - name: Save market state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .go_ai_market_watch_state.json
+          key: bet365-market-watch-state-${{ github.run_id }}
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: bet365-market-watch-${{ github.run_id }}
+          path: .go_ai_market_watch_state.json
+          if-no-files-found: ignore
+          retention-days: 7
