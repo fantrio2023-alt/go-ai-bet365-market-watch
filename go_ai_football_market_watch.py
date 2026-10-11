@@ -198,7 +198,7 @@ def main():
     state = load_state()
     key_start = int(state.get("_key_offset", 0)) % len(keys)
     sports, catalog_key_index, catalog_remaining, catalog_used = fetch_soccer_sports(keys, key_start)
-    if not_sports := (not sports):
+    if not sports:
         print("MARKET WATCH: NO_SOCCER_SPORTS_DISCOVERED — The Odds API returned no active soccer leagues.")
         return 1
 
@@ -229,6 +229,7 @@ def main():
                 all_events.append(event)
         current["_key_offset"] = (used_index + 1) % len(keys)
 
+    now = datetime.now(timezone.utc)
     for old_id, old_value in list(current.items()):
         if str(old_id).startswith("_") or not isinstance(old_value, dict):
             continue
@@ -249,7 +250,7 @@ def main():
         checked += 1
         event_id = str(event["id"])
         match = f'{event.get("home_team") or "Unknown"} vs {event.get("away_team") or "Unknown"}'
-        league = event.get("sport_title") or SPORT
+        league = event.get("sport_title") or event.get("_go_ai_sport_key", "soccer")
         event_date = event.get("commence_time") or "unknown"
         current[event_id] = {
             "match": match, "sport": event.get("_go_ai_sport_key", "soccer"), "league": league,
